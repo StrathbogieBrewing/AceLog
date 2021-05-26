@@ -108,6 +108,46 @@ void log_end(void) {
   }
 }
 
+int log_read(struct timeval *tv, void* data){
+  static unsigned char fileBuffer[kLogBufferSize];
+  static int fileBufferIndex = 0;
+  struct timeval lastTimeVal = {0};
+
+  if(lastTimeVal.tv_sec == 0){
+    lastTimeVal = *tv;
+  }
+
+  struct tm tm = *gmtime(&secondsNow);
+  uint32_t millis =
+      (uint32_t)tv.tv_usec / 1000L +
+      (uint32_t)(tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) * 1000LL;
+
+    while(1);
+      char directory[kDirStrLen];
+      sprintf(directory, "%s%4.4lu/%2.2u/%2.2u", basePath, 1900L + tm.tm_year,
+              tm.tm_mon + 1, tm.tm_mday);
+      build(directory);
+
+      // file name
+      char destination[kMaxStrLen];
+      sprintf(destination, "%s/%2.2u.dat", directory, tm.tm_hour);
+
+      // write / append buffer to file
+      FILE *fd = fopen(destination, "r");
+      if (fd != NULL) {
+        fread(fileBuffer, 1, kLogBufferSize, fd);
+        fclose(fd);
+        fileBufferIndex = 0;
+        recordMillis = ntohl(*(uint32_t *)fileBuffer);
+      }
+  // cache source file and listIndex
+
+
+
+  // read data and update time record
+
+}
+
 
 //
 // // maximum log record string

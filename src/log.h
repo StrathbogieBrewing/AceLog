@@ -10,7 +10,7 @@ extern "C" {
 
 void log_begin(const char *logPath, int dataSize);
 void log_commit(void* data);
-void log_read(struct timeval *tv, void* data);
+int log_read(struct timeval *tv, void* data);
 void log_end(void);
 
 #ifdef __cplusplus
