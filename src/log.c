@@ -14,9 +14,9 @@
 #define kMaxStrLen (1024)
 
 // maximum log file buffer size
-#define kLogBufferSize (1048576)
+#define kBufferSize (1048576)
 
-static unsigned char logBuffer[kLogBufferSize];
+static unsigned char logBuffer[kBufferSize];
 static long logBufferIndex = 0;
 static time_t logBufferTime = 0;
 static int logDataSize = 0;
@@ -28,8 +28,10 @@ static int logRecordSize = 0;
 static char basePath[kBaseStrLen] = {0};
 
 static bool isSameMinute(time_t t1, time_t t2) {
-  struct tm tm1 = *gmtime(&t1);
-  struct tm tm2 = *gmtime(&t2);
+  struct tm tm1;
+  gmtime_r(&t1, &tm1);
+  struct tm tm2;
+  gmtime_r(&t2, &tm2);
   if (tm1.tm_min == tm2.tm_min)
     return true;
   return false;
@@ -38,7 +40,8 @@ static bool isSameMinute(time_t t1, time_t t2) {
 void writeToDisk() {
   if (logBufferIndex == 0)
     return;
-  struct tm tm = *gmtime(&logBufferTime);
+  struct tm tm;
+  gmtime_r(&logBufferTime, &tm);
   // path
   char directory[kDirStrLen];
   sprintf(directory, "%s%4.4lu/%2.2u/%2.2u", basePath, 1900L + tm.tm_year,
@@ -74,10 +77,17 @@ void log_begin(const char *logPath, int dataSize) {
 static inline void appendToLogBuffer(unsigned char *logRecord) {
   memcpy(&logBuffer[logBufferIndex], logRecord, logRecordSize);
   logBufferIndex += logRecordSize;
-  if (logBufferIndex >= (kLogBufferSize - logRecordSize)) {
+  if (logBufferIndex >= (kBufferSize - logRecordSize)) {
     logBufferIndex = 0;
     fprintf(stderr, "Error : Log Buffer Overun\n");
   }
+}
+
+uint32_t millisFromMidnight(struct timeval *tv) {
+  struct tm tm;
+  gmtime_r(&tv->tv_sec, &tm);
+  return (uint32_t)tv->tv_usec / 1000L +
+           (uint32_t)(tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) * 1000LL;
 }
 
 void log_commit(void *data) {
@@ -85,10 +95,12 @@ void log_commit(void *data) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
   time_t secondsNow = tv.tv_sec;
-  struct tm tm = *gmtime(&secondsNow);
-  uint32_t millisNow =
-      (uint32_t)tv.tv_usec / 1000L +
-      (uint32_t)(tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) * 1000LL;
+  uint32_t millisNow = millisFromMidnight(&tv);
+  // struct tm tm;
+  // gmtime_r(&secondsNow, &tm);
+  // uint32_t millisNow =
+  //     (uint32_t)tv.tv_usec / 1000L +
+  //     (uint32_t)(tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) * 1000LL;
   if (logBufferTime == 0)
     logBufferTime = secondsNow;
   if (!isSameMinute(logBufferTime, secondsNow)) {
@@ -108,46 +120,87 @@ void log_end(void) {
   }
 }
 
-int log_read(struct timeval *tv, void* data){
-  static unsigned char fileBuffer[kLogBufferSize];
-  static int fileBufferIndex = 0;
-  struct timeval lastTimeVal = {0};
-
-  if(lastTimeVal.tv_sec == 0){
-    lastTimeVal = *tv;
-  }
-
-  struct tm tm = *gmtime(&secondsNow);
-  uint32_t millis =
-      (uint32_t)tv.tv_usec / 1000L +
-      (uint32_t)(tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) * 1000LL;
-
-    while(1);
-      char directory[kDirStrLen];
-      sprintf(directory, "%s%4.4lu/%2.2u/%2.2u", basePath, 1900L + tm.tm_year,
-              tm.tm_mon + 1, tm.tm_mday);
-      build(directory);
-
-      // file name
-      char destination[kMaxStrLen];
-      sprintf(destination, "%s/%2.2u.dat", directory, tm.tm_hour);
-
-      // write / append buffer to file
-      FILE *fd = fopen(destination, "r");
-      if (fd != NULL) {
-        fread(fileBuffer, 1, kLogBufferSize, fd);
-        fclose(fd);
-        fileBufferIndex = 0;
-        recordMillis = ntohl(*(uint32_t *)fileBuffer);
-      }
-  // cache source file and listIndex
-
-
-
-  // read data and update time record
-
+int getFileID(struct timeval *tv) {
+  struct tm tm;
+  // time_t t = tv
+  gmtime_r(&tv->tv_sec, &tm);
+  return (((((tm.tm_year * 12) + tm.tm_mon) * 32) + tm.tm_mday) * 24) +
+         tm.tm_hour;
 }
 
+bool getNextHour(struct timeval *tv) {
+  struct tm tm;
+  gmtime_r(&tv->tv_sec, &tm);
+  tm.tm_hour = 0;
+  time_t nextHour = timegm(&tm) + 60 * 60;
+  struct timeval now;
+  gettimeofday(&now, NULL);
+  if (nextHour > now.tv_sec) {
+    return false;
+  }
+  tv->tv_sec = nextHour;
+  tv->tv_usec = 0;
+  return true;
+}
+
+// read hourly file into buffer, return bytes read
+int getBuffer(const struct timeval *tv, unsigned char *buffer, int size){
+  struct tm tm;
+  size_t bytesRead = 0;
+  char filePath[kDirStrLen];
+  gmtime_r(&tv->tv_sec, &tm);
+  sprintf(filePath, "%s%4.4lu/%2.2u/%2.2u/%2.2u.dat", basePath,
+          1900L + tm.tm_year, tm.tm_mon + 1, tm.tm_mday,
+          tm.tm_hour);
+  FILE *fd = fopen(filePath, "r");
+  if (fd != NULL) {
+    bytesRead = fread(buffer, 1, size, fd);
+    fclose(fd);
+  }
+  return bytesRead;
+}
+
+// read the next log record later than tv and earlier than now
+int log_read(struct timeval *tv, void *data) {
+  static unsigned char fileBuffer[kBufferSize];
+  static int fileBufferIndex = 0;
+  static int fileBufferSize = 0;
+  static int fileID = 0;
+
+  // does the buffer contain the correct file
+  // if not, read correct file into buffer
+  if (fileID != getFileID(tv)) {
+    fileID = 0;
+    fileBufferIndex = 0;
+    fileBufferSize = 0;
+    while (fileBufferSize == 0) {
+      fileBufferSize = getBuffer(tv, fileBuffer, kBufferSize);
+      if(fileBufferSize == 0){   // try next file
+        if (getNextHour(tv) == false) {
+          return 0;
+        }
+      } else {
+        fileID = getFileID(tv);
+        break;
+      }
+    }
+  }
+
+
+  uint32_t millisAfter = millisFromMidnight(tv);
+  // while()
+  uint32_t millisRecord = ntohl(*(uint32_t *)&fileBuffer[fileBufferIndex]);
+
+  if (millisAfter < millisRecord) {
+    memcpy(data, &fileBuffer[fileBufferIndex] + sizeof(uint32_t), logDataSize);
+    fileBufferIndex += logRecordSize;
+    if (fileBufferIndex >= fileBufferSize) {
+      if (getNextHour(tv) == false) {
+
+      }
+    }
+  }
+}
 
 //
 // // maximum log record string
@@ -274,7 +327,8 @@ int log_read(struct timeval *tv, void* data){
 // //   // const char *src = source;
 // //   // int queryCount = 0;
 // //   // while (queryCount < kMaxQueryCount) {
-// //   //   const char *ptr = bcd_parseSource(recordSource[queryCount].bcd, src);
+// //   //   const char *ptr = bcd_parseSource(recordSource[queryCount].bcd,
+// src);
 // //   //   if (ptr == src)
 // //   //     break;
 // //   //   queryCount++;
@@ -484,7 +538,8 @@ int log_read(struct timeval *tv, void* data){
 // //             dataAvailable = 0;
 // //             if (outputCount == 0) {
 // //               outputCount++;
-// //               fprintf(stdout, "{\"sources\":\"%s\",\"timeseries\":[[%lld%s]",
+// //               fprintf(stdout,
+// "{\"sources\":\"%s\",\"timeseries\":[[%lld%s]",
 // //                       source, recordMillis, outputString);
 // //             } else {
 // //               fprintf(stdout, ",[%lld%s]", recordMillis, outputString);
@@ -496,10 +551,12 @@ int log_read(struct timeval *tv, void* data){
 // //         }
 // //
 // //         // harvest requested data entries
-// //         if ((recordMillis >= startMillis) && (recordMillis <= endMillis)) {
+// //         if ((recordMillis >= startMillis) && (recordMillis <= endMillis))
+// {
 // //           int queryIndex = 0;
 // //           while (queryIndex < queryCount) {
-// //             if (fileBuffer[index].source.raw == recordSource[queryIndex].raw) {
+// //             if (fileBuffer[index].source.raw ==
+// recordSource[queryIndex].raw) {
 // //               recordValue[queryIndex].raw = fileBuffer[index].value.raw;
 // //               dataAvailable |= (1 << queryIndex);
 // //             }
