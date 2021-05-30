@@ -115,21 +115,6 @@ bool nextHour(struct timeval *tv) {
   struct timeval now;
   gettimeofday(&now, NULL);
   return (tv->tv_sec < now.tv_sec);
-
-  //
-  //
-  // struct tm tm;
-  // gmtime_r(&tv->tv_sec, &tm);
-  // tm.tm_hour = 0;
-  // time_t nextHour = timegm(&tm) + 60LL * 60LL;
-  // struct timeval now;
-  // gettimeofday(&now, NULL);
-  // if (nextHour > now.tv_sec) {
-  //   return false;
-  // }
-  // tv->tv_sec = nextHour;
-  // tv->tv_usec = 0;
-  // return true;
 }
 
 // read hourly file into buffer, return bytes read
@@ -139,10 +124,8 @@ int getBuffer(log_t *logger, time_t fileTime) {
   gmtime_r(&fileTime, &tm);
   sprintf(filePath, "%s%4.4lu/%2.2u/%2.2u/%2.2u.dat", logger->basePath,
           1900L + tm.tm_year, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour);
-
   logger->fileTime = secondsToHour(fileTime);
   logger->fileIndex = 0;
-
   FILE *fd = fopen(filePath, "r");
   if (fd != NULL) {
     logger->fileSize = fread(logger->fileBuffer, 1, log_kFileBufferSize, fd);
@@ -153,31 +136,56 @@ int getBuffer(log_t *logger, time_t fileTime) {
   return logger->fileSize;
 }
 
-// read the next log record later than tv and earlier than now
+int getNextFileBuffer(log_t *logger, struct timeval *tv) {
+  int bytesRead = 0;
+  while ((bytesRead = getBuffer(logger, tv->tv_sec)) == 0) {
+    if (nextHour(tv) == false) {
+      return 0;
+    }
+  }
+  return bytesRead;
+}
+
+// read the log record later than tv and earlier than now
 int log_read(log_t *logger, struct timeval *tv, void *data) {
   if (logger->fileTime != secondsToHour(tv->tv_sec)) {
-    while (getBuffer(logger, tv) == 0) {
-      if (nextHour(tv) == false)
-        return 0;
+    if (getNextFileBuffer(logger, tv) == 0) {
+      return 0;
+    }
+  }
+
+  uint32_t requestedMillis = millisFromHour(tv);
+  uint32_t recordMillis =
+      ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]);
+
+  if (logger->fileIndex != 0) {
+    // same file
+    if (requestedMillis == recordMillis) {
+      // same record
+      logger->fileIndex += logger->dataSize + sizeof(uint32_t);
     }
   }
 
   uint32_t millisRequested = millisFromHour(tv);
+
+  uint32_t recordMillis = ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]));
+
   while (millisRequested >
          ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex])) {
     logger->fileIndex += logger->dataSize + sizeof(uint32_t);
     if (logger->fileIndex >= logger->fileSize) {
-      while (getBuffer(logger, tv) == 0) {
-        millisRequested = 0;
-        if (nextHour(tv) == false)
+      millisRequested = 0;
+      do {
+        if (nextHour(tv) == false) {
           return 0;
-      }
+        }
+      } while (getBuffer(logger, tv) == 0);
     }
   }
 
   memcpy(data, &logger->fileBuffer[logger->fileIndex] + sizeof(uint32_t),
          logger->dataSize);
-  logger->fileIndex += logger->dataSize + sizeof(uint32_t);
+  // logger->fileIndex += logger->dataSize + sizeof(uint32_t);
   return logger->dataSize;
 }
 
