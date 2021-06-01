@@ -20,11 +20,11 @@ static bool isSameMinute(time_t t1, time_t t2) {
   return false;
 }
 
-uint32_t millisFromHour(struct timeval *tv) {
+uint32_t millisFromHour(struct timespec *ts) {
   struct tm tm;
-  gmtime_r(&tv->tv_sec, &tm);
-  return (uint32_t)tv->tv_usec / 1000L +
-         (uint32_t)(tm.tm_min * 60 + tm.tm_sec) * 1000LL;
+  gmtime_r(&ts->tv_sec, &tm);
+  return (uint32_t)(ts->tv_nsec / 1000000LL) +
+         ((uint32_t)tm.tm_min * 60LL + (uint32_t)tm.tm_sec) * 1000LL;
 }
 
 time_t secondsToHour(time_t seconds) {
@@ -33,6 +33,13 @@ time_t secondsToHour(time_t seconds) {
   tm.tm_sec = 0;
   tm.tm_min = 0;
   return timegm(&tm);
+}
+
+void fileName(time_t t) {
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  fprintf(stdout, "%4.4lu/%2.2u/%2.2u/%2.2u.dat\n", 1900L + tm.tm_year,
+          tm.tm_mon + 1, tm.tm_mday, tm.tm_hour);
 }
 
 void writeToDisk(log_t *logger) {
@@ -86,11 +93,16 @@ void appendToLogBuffer(log_t *logger, uint32_t time, void *data) {
   logger->fileIndex += logRecordSize; // update the log file buffer index
 }
 
+long int log_millis(struct timespec *ts) {
+  return (long int)millisFromHour(ts) +
+         (long int)secondsToHour(ts->tv_sec) * 1000LL;
+}
+
 long int log_commit(log_t *logger, void *data) {
   // get millisecond timestamp for this log commit
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  time_t secondsNow = tv.tv_sec;
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  time_t secondsNow = ts.tv_sec;
 
   if (logger->fileTime == 0)
     logger->fileTime = secondsNow;
@@ -98,9 +110,9 @@ long int log_commit(log_t *logger, void *data) {
     writeToDisk(logger);
     logger->fileTime = secondsNow;
   }
-  uint32_t millisNow = millisFromHour(&tv);
+  uint32_t millisNow = millisFromHour(&ts);
   appendToLogBuffer(logger, millisNow, data);
-  return (long int)millisNow + (long int)secondsToHour(secondsNow) * 1000LL;
+  return log_millis(&ts);
 }
 
 void log_end(log_t *logger) {
@@ -109,15 +121,15 @@ void log_end(log_t *logger) {
   }
 }
 
-bool nextHour(struct timeval *tv) {
-  tv->tv_sec = secondsToHour(tv->tv_secs) + 3600LL;
-  tv->tv_usec = 0;
-  struct timeval now;
-  gettimeofday(&now, NULL);
-  return (tv->tv_sec < now.tv_sec);
+bool nextHour(struct timespec *ts) {
+  ts->tv_sec = secondsToHour(ts->tv_sec) + 3600LL;
+  ts->tv_nsec = 0;
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  return (ts->tv_sec < now.tv_sec);
 }
 
-// read hourly file into buffer, return bytes read
+// read hourly data log file into buffer, return bytes read
 int getBuffer(log_t *logger, time_t fileTime) {
   struct tm tm;
   char filePath[log_kMaxStrLen * 2];
@@ -133,13 +145,14 @@ int getBuffer(log_t *logger, time_t fileTime) {
   } else {
     logger->fileSize = 0;
   }
+  // fprintf(stdout, "getBuffer %s %d\n", filePath, logger->fileSize);
   return logger->fileSize;
 }
 
-int getNextFileBuffer(log_t *logger, struct timeval *tv) {
+int getFileBuffer(log_t *logger, struct timespec *ts) {
   int bytesRead = 0;
-  while ((bytesRead = getBuffer(logger, tv->tv_sec)) == 0) {
-    if (nextHour(tv) == false) {
+  while ((bytesRead = getBuffer(logger, ts->tv_sec)) == 0) {
+    if (nextHour(ts) == false) {
       return 0;
     }
   }
@@ -147,47 +160,85 @@ int getNextFileBuffer(log_t *logger, struct timeval *tv) {
 }
 
 // read the log record later than tv and earlier than now
-int log_read(log_t *logger, struct timeval *tv, void *data) {
-  if (logger->fileTime != secondsToHour(tv->tv_sec)) {
-    if (getNextFileBuffer(logger, tv) == 0) {
+int log_read(log_t *logger, struct timespec *ts, void *data) {
+  // fileName(ts->tv_sec);
+  // usleep(10000);
+
+  if (logger->fileTime != secondsToHour(ts->tv_sec)) {
+    if (getFileBuffer(logger, ts) == 0) { // get new file
       return 0;
     }
+
+    // fprintf(stdout, "New file opened 1\n");
   }
 
-  uint32_t requestedMillis = millisFromHour(tv);
-  uint32_t recordMillis =
-      ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]);
-
-  if (logger->fileIndex != 0) {
-    // same file
-    if (requestedMillis == recordMillis) {
-      // same record
-      logger->fileIndex += logger->dataSize + sizeof(uint32_t);
-    }
-  }
-
-  uint32_t millisRequested = millisFromHour(tv);
-
-  uint32_t recordMillis = ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]));
-
-  while (millisRequested >
+  while (millisFromHour(ts) >=
          ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex])) {
     logger->fileIndex += logger->dataSize + sizeof(uint32_t);
     if (logger->fileIndex >= logger->fileSize) {
-      millisRequested = 0;
-      do {
-        if (nextHour(tv) == false) {
-          return 0;
-        }
-      } while (getBuffer(logger, tv) == 0);
+      if (nextHour(ts) == false) {
+        return 0;
+      }
+      if (getFileBuffer(logger, ts) == 0) { // get new file
+        return 0;
+      }
+
+      // fprintf(stdout, "New file opened 2\n");
     }
   }
 
+  uint32_t recordMillisFromHour =
+      ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]);
+  time_t recordSecondsToHour = secondsToHour(ts->tv_sec);
+
+  ts->tv_sec = recordSecondsToHour + ((long int)recordMillisFromHour / 1000LL);
+  ts->tv_nsec = ((long int)recordMillisFromHour % 1000LL) * 1000000LL;
+
   memcpy(data, &logger->fileBuffer[logger->fileIndex] + sizeof(uint32_t),
-         logger->dataSize);
-  // logger->fileIndex += logger->dataSize + sizeof(uint32_t);
+         logger->dataSize); // copy the new log data
   return logger->dataSize;
 }
+
+// if (logger->fileIndex + logger->dataSize + sizeof(uint32_t) >=
+//     logger->fileSize) {
+//   logger->fileTime = 0; // if end of log, flag to read next log file
+// }
+
+// else {
+// uint32_t requestedMillis = millisFromHour(tv);
+// uint32_t recordMillis =
+//     ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]);
+// }
+
+// uint32_t requestedMillis = millisFromHour(tv);
+// uint32_t recordMillis =
+//     ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]);
+//
+// if (logger->fileIndex != 0) {
+//   // same file
+//   if (requestedMillis == recordMillis) {
+//     // same record
+//     logger->fileIndex += logger->dataSize + sizeof(uint32_t);
+//   }
+// }
+//
+// uint32_t millisRequested = millisFromHour(tv);
+//
+// uint32_t recordMillis = ntohl(*(uint32_t
+// *)&logger->fileBuffer[logger->fileIndex]));
+//
+// while (millisRequested >
+//        ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex])) {
+//   logger->fileIndex += logger->dataSize + sizeof(uint32_t);
+//   if (logger->fileIndex >= logger->fileSize) {
+//     millisRequested = 0;
+//     do {
+//       if (nextHour(tv) == false) {
+//         return 0;
+//       }
+//     } while (getBuffer(logger, tv) == 0);
+//   }
+// }
 
 // **************************************************************** //
 // // maximum log record string

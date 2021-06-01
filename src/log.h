@@ -25,7 +25,8 @@ typedef struct {
 
 void log_begin(log_t *logger, const char *logPath, int dataSize);
 long int log_commit(log_t *logger, void* data);
-int log_read(log_t *logger, struct timeval *tv, void *data);
+long int log_millis(struct timespec *ts);
+int log_read(log_t *logger, struct timespec *ts, void *data);
 void log_end(log_t *logger);
 
 #ifdef __cplusplus
