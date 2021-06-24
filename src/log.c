@@ -93,12 +93,12 @@ void appendToLogBuffer(log_t *logger, uint32_t time, void *data) {
   logger->fileIndex += logRecordSize; // update the log file buffer index
 }
 
-long int log_millis(struct timespec *ts) {
-  return (long int)millisFromHour(ts) +
-         (long int)secondsToHour(ts->tv_sec) * 1000LL;
+uint64_t log_millis(struct timespec *ts) {
+  return (uint64_t)millisFromHour(ts) +
+         (uint64_t)secondsToHour(ts->tv_sec) * 1000LL;
 }
 
-long int log_commit(log_t *logger, void *data) {
+uint64_t log_commit(log_t *logger, void *data) {
   // get millisecond timestamp for this log commit
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -191,8 +191,8 @@ int log_read(log_t *logger, struct timespec *ts, void *data) {
       ntohl(*(uint32_t *)&logger->fileBuffer[logger->fileIndex]);
   time_t recordSecondsToHour = secondsToHour(ts->tv_sec);
 
-  ts->tv_sec = recordSecondsToHour + ((long int)recordMillisFromHour / 1000LL);
-  ts->tv_nsec = ((long int)recordMillisFromHour % 1000LL) * 1000000LL;
+  ts->tv_sec = recordSecondsToHour + ((time_t)recordMillisFromHour / 1000LL);
+  ts->tv_nsec = ((uint32_t)recordMillisFromHour % 1000LL) * 1000000LL;
 
   memcpy(data, &logger->fileBuffer[logger->fileIndex] + sizeof(uint32_t),
          logger->dataSize); // copy the new log data
